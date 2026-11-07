@@ -34,6 +34,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
@@ -185,6 +186,33 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 	}
 }
 
+// redactOutboundPIIBody 对发往上游的 JSON 请求体做隐私脱敏。
+// 仅处理 JSON Content-Type；只替换字符串值中命中的 PII/密钥片段，
+// 键名、结构、数字、布尔均保留，避免破坏 model/stream 等关键字段。
+// 无命中时零拷贝回填原始字节，不改变请求体语义。
+func redactOutboundPIIBody(req *http.Request) {
+	if req == nil || req.Body == nil || req.Body == http.NoBody {
+		return
+	}
+	if ct := strings.ToLower(req.Header.Get("Content-Type")); !strings.Contains(ct, "json") {
+		return
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil || len(body) == 0 {
+		return
+	}
+	out := body
+	if filtered, changed := logredact.RedactPIIJSON(body); changed {
+		out = filtered
+	}
+	req.Body = io.NopCloser(bytes.NewReader(out))
+	req.ContentLength = int64(len(out))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(out)), nil
+	}
+}
+
 // Do 执行 HTTP 请求
 // 根据隔离策略获取或创建客户端，并跟踪请求生命周期
 //
@@ -202,6 +230,7 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	redactOutboundPIIBody(req)
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -253,6 +282,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
+	redactOutboundPIIBody(req)
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {
