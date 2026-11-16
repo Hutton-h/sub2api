@@ -17,6 +17,9 @@ services:
   # ===========================================================================
   sub2api:
     image: hutton-h/sub2api:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     container_name: sub2api
     restart: unless-stopped
     security_opt:
