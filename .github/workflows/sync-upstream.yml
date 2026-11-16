@@ -1,0 +1,63 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 2,14 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/Wei-Shaw/sub2api.git
+          git fetch upstream --tags
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          BEHIND=$(git rev-list main..upstream/main --count)
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream/main
+        if: steps.check.outputs.has_updates == 'true'
+        id: merge
+        run: |
+          git merge upstream/main --no-edit -m "Merge upstream/main (auto-sync)" && echo "conflict=false" >> $GITHUB_OUTPUT || echo "conflict=true" >> $GITHUB_OUTPUT
+
+      - name: Push merged main
+        if: steps.merge.outputs.conflict == 'false'
+        run: |
+          git push origin main
+          git push origin --tags
+
+      - name: Create conflict PR
+        if: steps.merge.outputs.conflict == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: auto-sync/upstream-conflict
+          title: 'Auto-sync: merge conflict with upstream/main'
+          body: |
+            上游仓库 (Wei-Shaw/sub2api) 有新提交，但与当前仓库的自定义修改产生冲突。
+            请手动解决冲突后合并此 PR。
+          labels: 'auto-sync,conflict'
